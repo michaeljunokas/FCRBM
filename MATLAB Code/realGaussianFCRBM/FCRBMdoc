@@ -1,0 +1,57 @@
+DOCUMENTATION FOR FCRBM FUNCTIONS
+
+FACTORED RBM TESTS
+
+- WORKING EXPERIMENT 1
+
+	sampling two combo freq-mod sounds:
+		AUDIO1	=	oscillating every 2000 samples
+		AUDIO2	=	oscillating every 4000 samples
+	
+	with
+			FFT = 4000
+			hop = 4000
+			no tapering window
+			
+			order = 2
+			numhid = 4
+			numfac = 4
+			numfeat = 2
+			maxEpoch = 2500 (could probably be less...)
+
+	using 	sTrainingAndDataPrepNoBatch.m with gaussianfaccrbmAUDIOnoBatch (CRBM with factored weights)
+			sGenerateNoBatch.m with genfaccrbm (respective generative function)
+			
+	was able to faithfully reproduce initialized audio ad infinitum
+	
+	
+- WORKING EXPERIMENT 2
+
+	same as above except
+		FFT = 2000
+		order = 4
+		
+	error was high, but that is expected is the sounds are very different... should code to look at the
+	difference between successive error rates.
+	
+		***	erRate check implemented in Factored RBM ***
+		
+		
+- WORKING EXPERIMENT 3
+
+	same as above except
+		FFT = 1000
+		order = 8
+		
+	works but getting fuzzy....with new erRate measure, finished in 2466 epochs
+		
+
+- WORKING EXPERIMENT 4
+
+	same as above except
+		FFT = 2000
+		hop = FFTwindow/2
+		order = 8
+		epochs = 2934
+		
+	
