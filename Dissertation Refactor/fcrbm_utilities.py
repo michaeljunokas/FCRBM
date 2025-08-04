@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import librosa
+import os
 
 class FCRBM(tf.Module):
     def __init__(self, visible_dim, hidden_dim, style_dim, history_dim, k=1):
@@ -110,8 +111,121 @@ class FCRBM(tf.Module):
         reconstruction_error = tf.reduce_mean(tf.square(v_pos - v_neg))
         return reconstruction_error
 
+def synthesize_audio(model, u_seed, y_seed, num_frames_to_generate, n_fft, hop_length, sr):
+    """
+    Synthesizes a new audio spectrogram using the trained FCRBM.
+
+    Args:
+        model (FCRBM): The trained FCRBM model.
+        u_seed (tf.Tensor): The initial spectrogram frame to start generation (history seed).
+        y_seed (tf.Tensor): The style vector to maintain throughout the synthesis.
+        num_frames_to_generate (int): The number of new spectrogram frames to create.
+        n_fft (int): FFT window size.
+        hop_length (int): Hop length for STFT.
+        sr (int): Sampling rate for audio reconstruction.
+
+    Returns:
+        np.array: The generated audio waveform.
+    """
+    generated_spectrogram_frames = []
+    
+    # Initialize the current visible state with the history seed.
+    # The visible state is the spectrogram frame at the current time step (v_t).
+    # The history is the spectrogram frame from the previous time step (v_{t-1}).
+    # So, for the first generation step, the history is the seed you provide.
+    v_current = tf.expand_dims(u_seed, 0)
+    
+    # Expand style seed to match batch dimensions.
+    # We want to maintain a constant style throughout the generation.
+    y_current = tf.expand_dims(y_seed, 0)
+
+    for _ in range(num_frames_to_generate):
+        # 1. Sample the hidden state (h) from the current visible state (v)
+        #    and the conditional inputs (u, y).
+        #    Here, the history for the current step is the previous visible state.
+        h_prob = model._hidden_prob(v_current, v_current, y_current)
+        h_sample = tf.cast(tf.random.uniform(tf.shape(h_prob)) < h_prob, tf.float32)
+
+        # 2. Reconstruct a new visible state (v_new) from the sampled hidden state.
+        #    This v_new is the new spectrogram frame.
+        v_mean = model._visible_mean(h_sample, v_current)
+        
+        # 3. Use the reconstructed visible state as the input for the next time step.
+        v_current = v_mean
+        
+        # 4. Store the newly generated spectrogram frame.
+        generated_spectrogram_frames.append(v_current.numpy()[0])
+        
+    generated_spectrogram = np.array(generated_spectrogram_frames).T
+
+    # Convert the spectrogram back to an audio waveform using the Griffin-Lim algorithm.
+    # This algorithm is used to estimate the phase information that was lost during STFT.
+    phase = np.zeros_like(generated_spectrogram)
+    D = generated_spectrogram * np.exp(1j * phase)
+    audio = librosa.griffinlim(D, n_fft=n_fft, hop_length=hop_length)
+    
+    return audio
+
 # convert spectrogram to audio
 def spectrogram_to_audio(spectrogram, sr, n_fft, hop_length):
     phase = np.zeros_like(spectrogram)
     D = spectrogram * np.exp(1j * phase)
     return librosa.griffinlim(D, n_fft=n_fft, hop_length=hop_length)
+
+def process_audio_files(audio_dir, n_fft, hop_length, sr):
+    """
+    Loads all .wav files from a directory, computes their spectrograms,
+    and pads them to a common length for training.
+    
+    Args:
+        audio_dir (str): Path to the directory containing audio files.
+        n_fft (int): Number of FFT components.
+        hop_length (int): Number of samples between successive FFTs.
+        sr (int): Sampling rate of the audio.
+    
+    Returns:
+        tuple: A tuple containing:
+            - spectrogram_data (np.array): A concatenated array of all spectrogram frames.
+            - style_data (np.array): A concatenated array of one-hot style vectors.
+            - visible_dim (int): The number of frequency bins (FFT components).
+    """
+    all_spectrograms = []
+    file_list = sorted([f for f in os.listdir(audio_dir) if f.endswith('.wav')])
+    
+    if not file_list:
+        raise ValueError(f"No .wav files found in directory: {audio_dir}")
+        
+    num_audio_files = len(file_list)
+    if num_audio_files != 9:
+        print(f"Warning: Expected 9 audio files, but found {num_audio_files}. Proceeding anyway.")
+    
+    # Process each audio file
+    for filename in file_list:
+        filepath = os.path.join(audio_dir, filename)
+        y, _ = librosa.load(filepath, sr=sr)
+        S = librosa.stft(y, n_fft=n_fft, hop_length=hop_length)
+        S_mag = np.abs(S)
+        all_spectrograms.append(S_mag)
+
+    # Pad all spectrograms to the same length for batching
+    max_len = max(s.shape[1] for s in all_spectrograms)
+    padded_spectrograms = []
+    for s in all_spectrograms:
+        padded = np.pad(s, ((0, 0), (0, max_len - s.shape[1])), 'constant')
+        padded_spectrograms.append(padded)
+
+    # Combine all data into a single numpy array
+    spectrogram_data = np.concatenate([s.T for s in padded_spectrograms], axis=0)
+    visible_dim = spectrogram_data.shape[1]
+
+    # Create a style vector for each audio file
+    style_vectors = np.eye(num_audio_files)
+
+    # Expand the style vectors to match the number of frames
+    style_data = []
+    for i, s in enumerate(padded_spectrograms):
+        style_data.append(np.tile(style_vectors[i], (s.shape[1], 1)))
+
+    style_data = np.concatenate(style_data, axis=0)
+    
+    return spectrogram_data, style_data, visible_dim
