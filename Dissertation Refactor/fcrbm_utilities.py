@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import librosa
+import os
 
 class FCRBM(tf.Module):
     def __init__(self, visible_dim, hidden_dim, style_dim, history_dim, k=1):
@@ -115,3 +116,61 @@ def spectrogram_to_audio(spectrogram, sr, n_fft, hop_length):
     phase = np.zeros_like(spectrogram)
     D = spectrogram * np.exp(1j * phase)
     return librosa.griffinlim(D, n_fft=n_fft, hop_length=hop_length)
+
+def process_audio_files(audio_dir, n_fft, hop_length, sr):
+    """
+    Loads all .wav files from a directory, computes their spectrograms,
+    and pads them to a common length for training.
+    
+    Args:
+        audio_dir (str): Path to the directory containing audio files.
+        n_fft (int): Number of FFT components.
+        hop_length (int): Number of samples between successive FFTs.
+        sr (int): Sampling rate of the audio.
+    
+    Returns:
+        tuple: A tuple containing:
+            - spectrogram_data (np.array): A concatenated array of all spectrogram frames.
+            - style_data (np.array): A concatenated array of one-hot style vectors.
+            - visible_dim (int): The number of frequency bins (FFT components).
+    """
+    all_spectrograms = []
+    file_list = sorted([f for f in os.listdir(audio_dir) if f.endswith('.wav')])
+    
+    if not file_list:
+        raise ValueError(f"No .wav files found in directory: {audio_dir}")
+        
+    num_audio_files = len(file_list)
+    if num_audio_files != 9:
+        print(f"Warning: Expected 9 audio files, but found {num_audio_files}. Proceeding anyway.")
+    
+    # Process each audio file
+    for filename in file_list:
+        filepath = os.path.join(audio_dir, filename)
+        y, _ = librosa.load(filepath, sr=sr)
+        S = librosa.stft(y, n_fft=n_fft, hop_length=hop_length)
+        S_mag = np.abs(S)
+        all_spectrograms.append(S_mag)
+
+    # Pad all spectrograms to the same length for batching
+    max_len = max(s.shape[1] for s in all_spectrograms)
+    padded_spectrograms = []
+    for s in all_spectrograms:
+        padded = np.pad(s, ((0, 0), (0, max_len - s.shape[1])), 'constant')
+        padded_spectrograms.append(padded)
+
+    # Combine all data into a single numpy array
+    spectrogram_data = np.concatenate([s.T for s in padded_spectrograms], axis=0)
+    visible_dim = spectrogram_data.shape[1]
+
+    # Create a style vector for each audio file
+    style_vectors = np.eye(num_audio_files)
+
+    # Expand the style vectors to match the number of frames
+    style_data = []
+    for i, s in enumerate(padded_spectrograms):
+        style_data.append(np.tile(style_vectors[i], (s.shape[1], 1)))
+
+    style_data = np.concatenate(style_data, axis=0)
+    
+    return spectrogram_data, style_data, visible_dim
